@@ -93,6 +93,13 @@ main {
   padding: 22px 20px 40px;
 }
 
+.greeting {
+  font-size: 21px;
+  font-weight: 650;
+  letter-spacing: -.02em;
+  margin: 4px 0 18px;
+}
+
 /* --- search ------------------------------------------------------------- */
 
 .search-area { position: relative; margin-bottom: 20px; }
@@ -370,20 +377,13 @@ main {
 
 .empty-state { text-align: center; color: var(--muted); padding: 48px 0; }
 
-footer {
-  max-width: 860px;
-  margin: 0 auto;
-  padding: 0 20px 36px;
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.6;
-}
 
 @media (max-width: 560px) {
-  .topbar-inner, main, footer { padding-left: 14px; padding-right: 14px; }
+  .topbar-inner, main { padding-left: 14px; padding-right: 14px; }
   .card { padding: 15px; }
   .card-price { margin-left: 0; text-align: left; width: 100%; }
   .price-now { font-size: 21px; }
   .card-name { max-width: 100%; }
   .results { right: 52px; }
+  .greeting { font-size: 19px; }
 }
