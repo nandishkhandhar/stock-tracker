@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Indian Stock Tracker</title>
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📈</text></svg>">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <h1>📈 Stock Tracker <span class="tag">NSE / BSE</span></h1>
+    <div class="quota" id="quota" title="Alpha Vantage free tier allows 25 requests per day"></div>
+  </div>
+</header>
+
+<main>
+  <section class="search-area">
+    <div class="search-box">
+      <input
+        id="search"
+        type="text"
+        placeholder="Search a company or ticker — e.g. Reliance, TCS, INFY"
+        autocomplete="off"
+        spellcheck="false"
+        aria-label="Search for a stock to add">
+      <button id="refresh" class="ghost-btn" title="Refresh all prices">↻</button>
+    </div>
+    <div id="results" class="results" hidden></div>
+  </section>
+
+  <div id="banner" class="banner" hidden></div>
+
+  <section id="cards" class="cards"></section>
+
+  <p id="empty" class="empty-state" hidden>
+    No stocks yet — search above to add one.
+  </p>
+</main>
+
+<footer>
+  <p>
+    Closing prices from <a href="https://www.alphavantage.co" target="_blank" rel="noopener">Alpha Vantage</a>,
+    ticker search from <a href="https://twelvedata.com" target="_blank" rel="noopener">Twelve Data</a>.
+    Prices are end-of-day, not live intraday quotes. Your watchlist is saved in this browser only.
+  </p>
+</footer>
+
+<script src="config.js"></script>
+<script type="module" src="app.js"></script>
+</body>
+</html>
