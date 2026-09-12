@@ -24,6 +24,16 @@ function niceTicks(min, max, count = 4) {
 const fmtPrice = (n) =>
   n.toLocaleString("en-IN", { maximumFractionDigits: 2, minimumFractionDigits: 2 });
 
+function fmtTime(ms) {
+  const d = new Date(ms);
+  return d.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: false });
+}
+
+// Points are either daily ({date}) or intraday ({t}); label accordingly.
+function labelFor(p) {
+  return p.t != null ? fmtTime(p.t) : fmtDate(p.date);
+}
+
 function fmtDate(iso) {
   const [y, m, d] = iso.split("-");
   return `${d} ${["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][+m - 1]} ${y}`;
@@ -62,7 +72,7 @@ export function drawChart(mount, points, { rising = true } = {}) {
     preserveAspectRatio: "none",
     class: "chart-svg",
     role: "img",
-    "aria-label": `Closing price from ${fmtDate(points[0].date)} to ${fmtDate(points[points.length - 1].date)}`,
+    "aria-label": `Price from ${labelFor(points[0])} to ${labelFor(points[points.length - 1])}`,
   });
 
   const stroke = rising ? "var(--up)" : "var(--down)";
@@ -105,7 +115,7 @@ export function drawChart(mount, points, { rising = true } = {}) {
 
   // Date labels at each end.
   const first = el("text", { x: pad.left, y: H - 8, class: "axis-label" });
-  first.textContent = fmtDate(points[0].date).slice(0, 6);
+  first.textContent = points[0].t != null ? fmtTime(points[0].t) : fmtDate(points[0].date).slice(0, 6);
   svg.appendChild(first);
 
   const last = el("text", {
@@ -114,7 +124,8 @@ export function drawChart(mount, points, { rising = true } = {}) {
     class: "axis-label",
     "text-anchor": "end",
   });
-  last.textContent = fmtDate(points[points.length - 1].date).slice(0, 6);
+  const lastP = points[points.length - 1];
+  last.textContent = lastP.t != null ? fmtTime(lastP.t) : fmtDate(lastP.date).slice(0, 6);
   svg.appendChild(last);
 
   // Hover crosshair.
@@ -153,7 +164,7 @@ export function drawChart(mount, points, { rising = true } = {}) {
     hoverDot.setAttribute("opacity", "1");
 
     tip.hidden = false;
-    tip.innerHTML = `<b>₹${fmtPrice(p.close)}</b><span>${fmtDate(p.date)}</span>`;
+    tip.innerHTML = `<b>₹${fmtPrice(p.close)}</b><span>${labelFor(p)}</span>`;
     // Keep the tooltip inside the card at both edges.
     const left = (x(i) / W) * box.width;
     tip.style.left = Math.max(4, Math.min(box.width - tip.offsetWidth - 4, left - tip.offsetWidth / 2)) + "px";

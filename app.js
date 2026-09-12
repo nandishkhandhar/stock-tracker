@@ -1,12 +1,13 @@
-import { getDaily, searchTickers, requestsRemaining, removeFromCache, QuotaError, TickerError } from "./data.js";
+import { getDaily, requestsRemaining, removeFromCache, QuotaError, TickerError } from "./data.js";
 import { drawChart } from "./chart.js";
+import { marketOpen } from "./freshness.js";
+import * as live from "./live.js";
 
 const LIST_KEY = "stock_watchlist_v1";
-// Alpha Vantage's free tier caps TIME_SERIES_DAILY at 100 trading days
-// (outputsize=full is a paid feature), so ~5 months is all the history there
-// is. Ranges stop there rather than showing 6M/1Y buttons that silently
-// render the same 100 points.
-const RANGES = { "1M": 22, "3M": 66, "5M": 100 };
+
+// 1D comes from BSE intraday ticks; the rest are daily closes from Alpha
+// Vantage, whose free tier caps history at 100 trading days (~5 months).
+const RANGES = { "1D": "intraday", "1W": 5, "1M": 22, "3M": 66, "5M": 100 };
 
 const $ = (id) => document.getElementById(id);
 const cardsEl = $("cards");
@@ -16,8 +17,11 @@ const bannerEl = $("banner");
 const quotaEl = $("quota");
 const emptyEl = $("empty");
 
-// symbol -> { name, range }
+// [{ symbol, name, code, range }]
 let watchlist = loadList();
+
+// symbol -> { daily, intraday, quote } so range switches need no refetch
+const state = new Map();
 
 // --- watchlist persistence -------------------------------------------------
 
@@ -41,7 +45,8 @@ function saveList() {
 
 function updateQuota() {
   const left = requestsRemaining();
-  quotaEl.textContent = `${left}/${CONFIG.DAILY_LIMIT} requests left today`;
+  const liveBit = live.liveEnabled() ? "Live · " : "";
+  quotaEl.textContent = `${liveBit}${left}/${CONFIG.DAILY_LIMIT} history requests left`;
   quotaEl.classList.toggle("low", left <= 3);
 }
 
@@ -51,31 +56,29 @@ function showBanner(msg, kind = "error") {
   bannerEl.hidden = false;
 }
 
-function hideBanner() {
-  bannerEl.hidden = true;
-}
+const hideBanner = () => (bannerEl.hidden = true);
 
 const fmt = (n) =>
-  n.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  Number(n).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 function prettyDate(iso) {
   const [y, m, d] = iso.split("-");
   return `${d} ${["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][+m - 1]} ${y}`;
 }
 
-// --- cards -----------------------------------------------------------------
+// --- card shell ------------------------------------------------------------
 
 function cardShell(entry) {
   const card = document.createElement("article");
   card.className = "card";
   card.dataset.symbol = entry.symbol;
 
-  const [base, exch] = entry.symbol.split(".");
+  const base = entry.symbol.split(".")[0];
   card.innerHTML = `
     <button class="remove" title="Remove ${base}" aria-label="Remove ${base}">×</button>
     <div class="card-head">
       <div class="card-id">
-        <div class="card-sym">${base}<span class="exch-pill">${exch === "BSE" ? "BSE" : "NSE"}</span></div>
+        <div class="card-sym">${base}<span class="exch-pill">BSE</span></div>
         <div class="card-name">${entry.name || ""}</div>
       </div>
       <div class="card-price"></div>
@@ -88,66 +91,172 @@ function cardShell(entry) {
   return card;
 }
 
-function renderCard(card, entry, data) {
+// --- rendering -------------------------------------------------------------
+
+function renderPrice(card, entry) {
+  const st = state.get(entry.symbol) || {};
+  const { quote, daily } = st;
   const priceEl = card.querySelector(".card-price");
-  const rising = data.change >= 0;
-  const sign = rising ? "+" : "";
+
+  // Prefer the live quote; fall back to the most recent daily close.
+  let price, change, changePct, asOf, isLive;
+
+  if (quote && quote.price != null) {
+    ({ price, change, changePct } = quote);
+    isLive = true;
+    asOf = marketOpen()
+      ? `Live · ${new Date(quote.at).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: false })}`
+      : "Last traded";
+  } else if (daily) {
+    price = daily.latest.close;
+    change = daily.change;
+    changePct = daily.changePct;
+    isLive = false;
+    asOf = `Close · ${prettyDate(daily.latest.date)}`;
+  } else {
+    return;
+  }
+
+  const up = (change ?? 0) >= 0;
+  const sign = up ? "+" : "";
 
   priceEl.innerHTML = `
-    <div class="price-now">₹${fmt(data.latest.close)}</div>
-    <div class="price-change ${rising ? "up" : "down"}">
-      ${sign}${fmt(data.change)} (${sign}${data.changePct.toFixed(2)}%)
+    <div class="price-now">
+      ₹${fmt(price)}${isLive && marketOpen() ? '<span class="live-dot" title="Live"></span>' : ""}
     </div>
-    <div class="price-asof">Close · ${prettyDate(data.latest.date)}${data.stale ? " · cached" : ""}</div>
+    <div class="price-change ${up ? "up" : "down"}">
+      ${change == null ? "" : `${sign}${fmt(change)}`}
+      ${changePct == null ? "" : `(${sign}${Number(changePct).toFixed(2)}%)`}
+    </div>
+    <div class="price-asof">${asOf}</div>
   `;
+}
 
+function renderChart(card, entry) {
+  const st = state.get(entry.symbol) || {};
+  const active = entry.range || "1M";
+  const wrap = card.querySelector(".chart-wrap");
+
+  if (active === "1D") {
+    const intra = st.intraday;
+    if (!intra) {
+      wrap.innerHTML = '<div class="skeleton"></div>';
+      return;
+    }
+    if (!intra.points || intra.points.length < 2) {
+      wrap.innerHTML =
+        '<p class="chart-empty">No intraday data — the market has not traded today.</p>';
+      return;
+    }
+    const first = intra.points[0].close;
+    const last = intra.points[intra.points.length - 1].close;
+    drawChart(wrap, intra.points, { rising: last >= first });
+    return;
+  }
+
+  const daily = st.daily;
+  if (!daily) {
+    wrap.innerHTML = '<div class="skeleton"></div>';
+    return;
+  }
+
+  const slice = daily.points.slice(-RANGES[active]);
+  const rising =
+    slice.length > 1 ? slice[slice.length - 1].close >= slice[0].close : true;
+  drawChart(wrap, slice, { rising });
+}
+
+function renderRanges(card, entry) {
   const rangesEl = card.querySelector(".ranges");
+  const active = entry.range || "1M";
   rangesEl.innerHTML = "";
-  const active = entry.range || "3M";
 
   for (const label of Object.keys(RANGES)) {
+    // 1D needs the Worker; hide it when live data is switched off.
+    if (label === "1D" && !live.liveEnabled()) continue;
+
     const btn = document.createElement("button");
     btn.className = "range-btn" + (label === active ? " active" : "");
     btn.textContent = label;
-    btn.addEventListener("click", () => {
+    btn.addEventListener("click", async () => {
       entry.range = label;
       saveList();
-      renderCard(card, entry, data);
+      renderRanges(card, entry);
+      renderChart(card, entry);
+      // Intraday is fetched lazily, the first time 1D is opened.
+      if (label === "1D" && entry.code && !state.get(entry.symbol)?.intraday) {
+        const intra = await live.getIntraday(entry.code);
+        if (intra) {
+          const st = state.get(entry.symbol) || {};
+          state.set(entry.symbol, { ...st, intraday: intra });
+          if (entry.range === "1D") renderChart(card, entry);
+        } else if (entry.range === "1D") {
+          card.querySelector(".chart-wrap").innerHTML =
+            '<p class="chart-empty">Intraday data unavailable right now.</p>';
+        }
+      }
     });
     rangesEl.appendChild(btn);
   }
-
-  const slice = data.points.slice(-RANGES[active]);
-  const wrap = card.querySelector(".chart-wrap");
-  // Colour the chart by the movement across the visible window, which can
-  // differ from the single-day change shown above.
-  const windowRising = slice.length > 1 ? slice[slice.length - 1].close >= slice[0].close : rising;
-  drawChart(wrap, slice, { rising: windowRising });
 }
 
 function renderCardError(card, message) {
   card.querySelector(".chart-wrap").innerHTML = `<p class="card-error">${message}</p>`;
 }
 
+// --- loading ---------------------------------------------------------------
+
 async function loadCard(card, entry, opts = {}) {
+  // Resolve the BSE scrip code once; live endpoints are keyed by it.
+  if (!entry.code) {
+    await live.loadDirectory();
+    entry.code = live.scripCodeFor(entry.symbol);
+    if (entry.code) saveList();
+  }
+
+  // Live quote first — it is free and fast, so the card shows a price
+  // immediately even while the slower history request is in flight.
+  if (entry.code && live.liveEnabled()) {
+    live.getQuote(entry.code).then((quote) => {
+      if (!quote) return;
+      const st = state.get(entry.symbol) || {};
+      state.set(entry.symbol, { ...st, quote });
+      if (!entry.name && quote.name) {
+        entry.name = quote.name;
+        saveList();
+        const n = card.querySelector(".card-name");
+        if (n) n.textContent = quote.name;
+      }
+      renderPrice(card, entry);
+    });
+  }
+
+  renderRanges(card, entry);
+
   try {
-    const data = await getDaily(entry.symbol, opts);
-    // Alpha Vantage does not return a company name, so keep whatever the
-    // search gave us and fall back to the ticker.
-    renderCard(card, entry, data);
+    const daily = await getDaily(entry.symbol, opts);
+    const st = state.get(entry.symbol) || {};
+    state.set(entry.symbol, { ...st, daily });
+    renderPrice(card, entry);
+    renderChart(card, entry);
     updateQuota();
     return true;
   } catch (err) {
     updateQuota();
+    // With a live quote on screen, a history failure is a degraded card, not
+    // a broken one.
+    const hasQuote = state.get(entry.symbol)?.quote;
     if (err instanceof QuotaError) {
-      renderCardError(card, "Daily request limit reached — try again tomorrow.");
-      showBanner(err.message);
+      renderCardError(card, hasQuote
+        ? "Live price only — daily history limit reached."
+        : "Daily request limit reached — try again tomorrow.");
+      if (!hasQuote) showBanner(err.message);
     } else if (err instanceof TickerError) {
-      renderCardError(card, err.message);
+      renderCardError(card, hasQuote ? "No chart history for this stock." : err.message);
     } else {
-      renderCardError(card, "Could not load data. Check your connection.");
+      renderCardError(card, "Could not load history.");
     }
-    return false;
+    return Boolean(hasQuote);
   }
 }
 
@@ -157,26 +266,21 @@ async function renderAll({ force = false } = {}) {
   cardsEl.innerHTML = "";
   emptyEl.hidden = watchlist.length > 0;
 
-  for (const entry of watchlist) {
-    const card = cardShell(entry);
-    cardsEl.appendChild(card);
-  }
+  for (const entry of watchlist) cardsEl.appendChild(cardShell(entry));
 
-  // Sequential, not parallel: the data layer serializes requests anyway, and
-  // this way each card fills in as soon as its own data lands.
   for (let i = 0; i < watchlist.length; i++) {
     await loadCard(cardsEl.children[i], watchlist[i], { force });
   }
 }
 
-async function addTicker(symbol, name) {
+async function addTicker(symbol, name, code) {
   if (watchlist.some((e) => e.symbol === symbol)) {
     showBanner(`${symbol.split(".")[0]} is already on your list.`, "info");
     setTimeout(hideBanner, 2500);
     return;
   }
 
-  const entry = { symbol, name };
+  const entry = { symbol, name, code };
   watchlist.push(entry);
   saveList();
   emptyEl.hidden = true;
@@ -186,17 +290,13 @@ async function addTicker(symbol, name) {
   card.scrollIntoView({ behavior: "smooth", block: "nearest" });
 
   const ok = await loadCard(card, entry);
-  if (!ok) {
-    // Do not keep a ticker that returned nothing usable.
-    const stillThere = watchlist.some((e) => e.symbol === symbol);
-    if (stillThere && card.querySelector(".card-error")) {
-      watchlist = watchlist.filter((e) => e.symbol !== symbol);
-      saveList();
-      setTimeout(() => {
-        card.remove();
-        emptyEl.hidden = watchlist.length > 0;
-      }, 2600);
-    }
+  if (!ok && card.querySelector(".card-error")) {
+    watchlist = watchlist.filter((e) => e.symbol !== symbol);
+    saveList();
+    setTimeout(() => {
+      card.remove();
+      emptyEl.hidden = watchlist.length > 0;
+    }, 2600);
   }
 }
 
@@ -204,8 +304,8 @@ function removeTicker(symbol) {
   watchlist = watchlist.filter((e) => e.symbol !== symbol);
   saveList();
   removeFromCache(symbol);
-  const card = cardsEl.querySelector(`[data-symbol="${CSS.escape(symbol)}"]`);
-  if (card) card.remove();
+  state.delete(symbol);
+  cardsEl.querySelector(`[data-symbol="${CSS.escape(symbol)}"]`)?.remove();
   emptyEl.hidden = watchlist.length > 0;
 }
 
@@ -225,7 +325,7 @@ function showResults(rows) {
   activeIndex = -1;
 
   if (!rows.length) {
-    resultsEl.innerHTML = '<div class="results-msg">No Indian listings found.</div>';
+    resultsEl.innerHTML = '<div class="results-msg">No matching stock found.</div>';
     resultsEl.hidden = false;
     return;
   }
@@ -241,7 +341,7 @@ function showResults(rows) {
     div.addEventListener("click", () => {
       searchEl.value = "";
       closeResults();
-      addTicker(row.symbol, row.name);
+      addTicker(row.symbol, row.name, row.code);
     });
     resultsEl.appendChild(div);
   }
@@ -251,16 +351,10 @@ function showResults(rows) {
 searchEl.addEventListener("input", () => {
   clearTimeout(searchTimer);
   const q = searchEl.value.trim();
-  if (q.length < 2) return closeResults();
-
-  searchTimer = setTimeout(async () => {
-    try {
-      showResults(await searchTickers(q));
-    } catch {
-      resultsEl.innerHTML = '<div class="results-msg">Search unavailable.</div>';
-      resultsEl.hidden = false;
-    }
-  }, 260);
+  if (q.length < 1) return closeResults();
+  // The directory is local, so this debounce is only to avoid rerendering
+  // the list on every keystroke.
+  searchTimer = setTimeout(async () => showResults(await live.search(q)), 120);
 });
 
 searchEl.addEventListener("keydown", (e) => {
@@ -289,23 +383,58 @@ $("refresh").addEventListener("click", async (e) => {
   const btn = e.currentTarget;
   if (requestsRemaining() < watchlist.length) {
     showBanner(
-      `Refreshing all ${watchlist.length} would need more requests than the ${requestsRemaining()} left today.`
+      `Refreshing all ${watchlist.length} needs more than the ${requestsRemaining()} history requests left today.`
     );
     return;
   }
   hideBanner();
   btn.classList.add("spin");
+  state.clear();
   await renderAll({ force: true });
   btn.classList.remove("spin");
 });
+
+// --- live polling ----------------------------------------------------------
+
+// Only the live quote is polled. Daily history is untouched, so this costs
+// nothing against the Alpha Vantage quota.
+function startLivePolling() {
+  if (!live.liveEnabled()) return;
+
+  setInterval(async () => {
+    if (!marketOpen() || document.hidden) return;
+
+    for (const entry of watchlist) {
+      if (!entry.code) continue;
+      const quote = await live.getQuote(entry.code);
+      if (!quote) continue;
+
+      const st = state.get(entry.symbol) || {};
+      state.set(entry.symbol, { ...st, quote });
+
+      const card = cardsEl.querySelector(`[data-symbol="${CSS.escape(entry.symbol)}"]`);
+      if (card) renderPrice(card, entry);
+
+      // Keep an open 1D chart moving with the price.
+      if (entry.range === "1D") {
+        const intra = await live.getIntraday(entry.code);
+        if (intra) {
+          state.set(entry.symbol, { ...state.get(entry.symbol), intraday: intra });
+          if (card) renderChart(card, entry);
+        }
+      }
+    }
+  }, CONFIG.LIVE_POLL_MS || 30000);
+}
 
 window.addEventListener("usage-changed", updateQuota);
 
 // --- start -----------------------------------------------------------------
 
 if (!CONFIG.ALPHA_VANTAGE_KEY) {
-  showBanner("No API key set in config.js — prices cannot load.");
+  showBanner("No API key set in config.js — chart history cannot load.");
 }
 
 updateQuota();
-renderAll();
+live.loadDirectory();
+renderAll().then(startLivePolling);

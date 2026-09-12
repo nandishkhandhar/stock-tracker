@@ -1,0 +1,6 @@
+name = "bse-proxy"
+main = "src/index.js"
+compatibility_date = "2025-09-01"
+
+# Free plan: 100,000 requests/day.
+workers_dev = true

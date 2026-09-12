@@ -49,3 +49,11 @@ export function isCacheFresh(entry) {
   if (!entry?.data?.latest?.date) return false;
   return entry.data.latest.date >= lastPublishedClose();
 }
+
+/** True while the BSE session is open (09:15–15:30 IST, Mon–Fri). */
+export function marketOpen(now = nowIST()) {
+  const day = now.getUTCDay();
+  if (day === 0 || day === 6) return false;
+  const minutes = now.getUTCHours() * 60 + now.getUTCMinutes();
+  return minutes >= 9 * 60 + 15 && minutes <= CLOSE_MINUTES;
+}

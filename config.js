@@ -14,6 +14,16 @@ window.CONFIG = {
   DAILY_LIMIT: 25,
   MIN_REQUEST_GAP_MS: 1200,
 
+  // Cloudflare Worker proxying BSE for live prices and intraday charts.
+  // BSE refuses browser requests directly (no CORS, and it requires a
+  // bseindia.com Referer), so the Worker adds the headers server-side.
+  // Source lives in worker/. Leave empty to disable live data entirely —
+  // the page then falls back to Alpha Vantage closing prices.
+  WORKER_URL: "https://bse-proxy.nandish03khandhar.workers.dev",
+
+  // How often to re-poll the live price while the market is open (ms).
+  LIVE_POLL_MS: 30000,
+
   // Shown on first visit. Afterwards the viewer's own list is used.
   DEFAULT_TICKERS: ["RELIANCE.BSE", "TCS.BSE", "INFY.BSE", "HDFCBANK.BSE"],
 };
