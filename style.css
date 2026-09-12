@@ -327,7 +327,32 @@ main {
 
 /* --- ranges ------------------------------------------------------------- */
 
-.ranges { display: flex; gap: 4px; margin: 14px 0 6px; }
+.range-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 14px 0 6px;
+}
+
+.ranges { display: flex; gap: 4px; }
+
+.period-change {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.period-change.up .period-pct, .period-change.up .period-abs { color: var(--up); }
+.period-change.down .period-pct, .period-change.down .period-abs { color: var(--down); }
+
+.period-pct { font-weight: 650; }
+.period-abs { font-size: 12px; opacity: .8; }
+.period-label { color: var(--muted); font-size: 11.5px; }
 
 .range-btn {
   font: inherit;
@@ -407,4 +432,6 @@ main {
   .card-name { max-width: 100%; }
   .results { right: 52px; }
   .greeting { font-size: 19px; }
+  .range-row { gap: 6px; }
+  .period-change { font-size: 12.5px; }
 }

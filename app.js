@@ -8,6 +8,7 @@ const LIST_KEY = "stock_watchlist_v1";
 // 1D comes from BSE intraday ticks; the rest are daily closes from Alpha
 // Vantage, whose free tier caps history at 100 trading days (~5 months).
 const RANGES = { "1D": "intraday", "1W": 5, "1M": 22, "3M": 66, "5M": 100 };
+const RANGE_LABELS = { "1D": "today", "1W": "1 week", "1M": "1 month", "3M": "3 months", "5M": "5 months" };
 
 const $ = (id) => document.getElementById(id);
 const cardsEl = $("cards");
@@ -83,7 +84,10 @@ function cardShell(entry) {
       </div>
       <div class="card-price"></div>
     </div>
-    <div class="ranges"></div>
+    <div class="range-row">
+      <div class="ranges"></div>
+      <div class="period-change"></div>
+    </div>
     <div class="chart-wrap"><div class="skeleton"></div></div>
   `;
 
@@ -92,6 +96,42 @@ function cardShell(entry) {
 }
 
 // --- rendering -------------------------------------------------------------
+
+/**
+ * Change across the visible chart window: first point to last, using the live
+ * price as the endpoint when one is available so the figure agrees with the
+ * price shown above it.
+ */
+function periodChange(entry) {
+  const st = state.get(entry.symbol) || {};
+  const active = entry.range || "1M";
+
+  let series;
+  if (active === "1D") {
+    series = st.intraday?.points;
+    // Intraday moves are measured from the previous close, which is where the
+    // session actually started, not from the first tick of the day.
+    if (series?.length) {
+      const base = st.intraday.prevClose ?? series[0].close;
+      const end = st.quote?.price ?? series[series.length - 1].close;
+      if (base) return { abs: end - base, pct: ((end - base) / base) * 100, label: "today" };
+    }
+    return null;
+  }
+
+  series = st.daily?.points;
+  if (!series || series.length < 2) return null;
+
+  const slice = series.slice(-RANGES[active]);
+  if (slice.length < 2) return null;
+
+  const base = slice[0].close;
+  // Live price is the truest endpoint during the session.
+  const end = st.quote?.price ?? slice[slice.length - 1].close;
+  if (!base) return null;
+
+  return { abs: end - base, pct: ((end - base) / base) * 100, label: RANGE_LABELS[active] };
+}
 
 function renderPrice(card, entry) {
   const st = state.get(entry.symbol) || {};
@@ -166,6 +206,26 @@ function renderChart(card, entry) {
   drawChart(wrap, slice, { rising });
 }
 
+function renderPeriod(card, entry) {
+  const el = card.querySelector(".period-change");
+  if (!el) return;
+
+  const pc = periodChange(entry);
+  if (!pc) {
+    el.textContent = "";
+    el.className = "period-change";
+    return;
+  }
+
+  const up = pc.abs >= 0;
+  const sign = up ? "+" : "";
+  el.className = "period-change " + (up ? "up" : "down");
+  el.innerHTML =
+    `<span class="period-pct">${sign}${pc.pct.toFixed(2)}%</span>` +
+    `<span class="period-abs">${sign}₹${fmt(Math.abs(pc.abs))}</span>` +
+    `<span class="period-label">over ${pc.label}</span>`;
+}
+
 function renderRanges(card, entry) {
   const rangesEl = card.querySelector(".ranges");
   const active = entry.range || "1M";
@@ -183,13 +243,17 @@ function renderRanges(card, entry) {
       saveList();
       renderRanges(card, entry);
       renderChart(card, entry);
+      renderPeriod(card, entry);
       // Intraday is fetched lazily, the first time 1D is opened.
       if (label === "1D" && entry.code && !state.get(entry.symbol)?.intraday) {
         const intra = await live.getIntraday(entry.code);
         if (intra) {
           const st = state.get(entry.symbol) || {};
           state.set(entry.symbol, { ...st, intraday: intra });
-          if (entry.range === "1D") renderChart(card, entry);
+          if (entry.range === "1D") {
+            renderChart(card, entry);
+            renderPeriod(card, entry);
+          }
         } else if (entry.range === "1D") {
           card.querySelector(".chart-wrap").innerHTML =
             '<p class="chart-empty">Intraday data unavailable right now.</p>';
@@ -228,6 +292,7 @@ async function loadCard(card, entry, opts = {}) {
         if (n) n.textContent = quote.name;
       }
       renderPrice(card, entry);
+      renderPeriod(card, entry);
     });
   }
 
@@ -239,6 +304,7 @@ async function loadCard(card, entry, opts = {}) {
     state.set(entry.symbol, { ...st, daily });
     renderPrice(card, entry);
     renderChart(card, entry);
+    renderPeriod(card, entry);
     updateQuota();
     return true;
   } catch (err) {
@@ -413,14 +479,20 @@ function startLivePolling() {
       state.set(entry.symbol, { ...st, quote });
 
       const card = cardsEl.querySelector(`[data-symbol="${CSS.escape(entry.symbol)}"]`);
-      if (card) renderPrice(card, entry);
+      if (card) {
+        renderPrice(card, entry);
+        renderPeriod(card, entry);
+      }
 
       // Keep an open 1D chart moving with the price.
       if (entry.range === "1D") {
         const intra = await live.getIntraday(entry.code);
         if (intra) {
           state.set(entry.symbol, { ...state.get(entry.symbol), intraday: intra });
-          if (card) renderChart(card, entry);
+          if (card) {
+            renderChart(card, entry);
+            renderPeriod(card, entry);
+          }
         }
       }
     }
